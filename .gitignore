@@ -6,3 +6,8 @@
 /bower_components/
 /node_modules/
 /output/
+
+# purerl
+
+ebin
+erl_crash.dump

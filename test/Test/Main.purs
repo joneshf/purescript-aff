@@ -5,7 +5,6 @@ import Prelude
 import Control.Alt ((<|>))
 import Control.Monad.Aff (Aff, Canceler(..), runAff_, launchAff, makeAff, try, bracket, generalBracket, delay, forkAff, suspendAff, joinFiber, killFiber, never, supervise, Error, error, message)
 import Control.Monad.Aff.AVar (AVAR, makeEmptyVar, takeVar, putVar)
-import Control.Monad.Aff.Compat as AC
 import Control.Monad.Eff (Eff, runPure)
 import Control.Monad.Eff.Class (class MonadEff, liftEff)
 import Control.Monad.Eff.Console (CONSOLE)
@@ -14,7 +13,6 @@ import Control.Monad.Eff.Exception (throwException, EXCEPTION)
 import Control.Monad.Eff.Ref (REF, Ref)
 import Control.Monad.Eff.Ref as Ref
 import Control.Monad.Eff.Ref.Unsafe (unsafeRunRef)
-import Control.Monad.Eff.Timer (TIMER, setTimeout, clearTimeout)
 import Control.Monad.Error.Class (throwError, catchError)
 import Control.Parallel (parallel, sequential, parTraverse_)
 import Data.Array as Array
@@ -27,7 +25,7 @@ import Data.Time.Duration (Milliseconds(..))
 import Data.Traversable (traverse)
 import Test.Assert (assert', ASSERT)
 
-type TestEffects eff = (assert ∷ ASSERT, console ∷ CONSOLE, ref ∷ REF, exception ∷ EXCEPTION, avar ∷ AVAR, timer ∷ TIMER | eff)
+type TestEffects eff = (assert ∷ ASSERT, console ∷ CONSOLE, ref ∷ REF, exception ∷ EXCEPTION, avar ∷ AVAR{- , timer ∷ TIMER -} | eff)
 type TestEff eff = Eff (TestEffects eff)
 type TestAff eff = Aff (TestEffects eff)
 
@@ -61,14 +59,31 @@ runAssertEq s a = runAff_ (assertEff s <<< map (eq a))
 assertEq ∷ ∀ eff a. Eq a ⇒ String → a → TestAff eff a → TestAff eff Unit
 assertEq s a aff = liftEff <<< assertEff s <<< map (eq a) =<< try aff
 
+runAssertEqual ∷ ∀ eff a. Eq a ⇒ Show a ⇒ String → a → TestAff eff a → TestEff eff Unit
+runAssertEqual s expected = runAff_ $ case _ of
+  Left err → do
+    Console.log ("[Error] " <> s)
+    throwException err
+  Right actual → do
+    assertEqual { actual, expected }
+    Console.log ("[OK] " <> s)
+
+assertEqual ∷ ∀ a eff. Eq a => Show a => { expected ∷ a, actual ∷ a } -> TestEff eff Unit
+assertEqual {actual, expected} = do
+  unless result $ Console.log message
+  assert' message result
+  where
+  message = "Expected: " <> show expected <> "\nActual:   " <> show actual
+  result = actual == expected
+
 assert ∷ ∀ eff. String → TestAff eff Boolean → TestAff eff Unit
 assert s aff = liftEff <<< assertEff s =<< try aff
 
 test_pure ∷ ∀ eff. TestEff eff Unit
-test_pure = runAssertEq "pure" 42 (pure 42)
+test_pure = runAssertEqual "pure" 42 (pure 42)
 
 test_bind ∷ ∀ eff. TestEff eff Unit
-test_bind = runAssertEq "bind" 44 do
+test_bind = runAssertEqual "bind" 44 do
   n1 ← pure 42
   n2 ← pure (n1 + 1)
   n3 ← pure (n2 + 1)
@@ -87,7 +102,7 @@ test_throw = runAssert "try/throw" do
   pure (isLeft n)
 
 test_liftEff ∷ ∀ eff. TestEff eff Unit
-test_liftEff = runAssertEq "liftEff" 42 do
+test_liftEff = runAssertEqual "liftEff" 42 do
   ref ← newRef 0
   liftEff do
     writeRef ref 42
@@ -563,23 +578,23 @@ test_avar_order = assert "avar/order" do
   joinFiber f1
   eq "takenfoo" <$> readRef ref
 
-test_efffn ∷ ∀ eff. TestAff eff Unit
-test_efffn = assert "efffn" do
-  ref ← newRef ""
-  let
-    jsDelay ms = AC.fromEffFnAff $ AC.EffFnAff $ AC.mkEffFn2 \ke kc → do
-      tid ← setTimeout ms (AC.runEffFn1 kc unit)
-      pure $ AC.EffFnCanceler $ AC.mkEffFn3 \e cke ckc → do
-        clearTimeout tid
-        AC.runEffFn1 ckc unit
-    action = do
-      jsDelay 10
-      modifyRef ref (_ <> "done")
-  f1 ← forkAff action
-  f2 ← forkAff action
-  killFiber (error "Nope.") f2
-  delay (Milliseconds 20.0)
-  eq "done" <$> readRef ref
+-- test_efffn ∷ ∀ eff. TestAff eff Unit
+-- test_efffn = assert "efffn" do
+--   ref ← newRef ""
+--   let
+--     jsDelay ms = AC.fromEffFnAff $ AC.EffFnAff $ AC.mkEffFn2 \ke kc → do
+--       tid ← setTimeout ms (AC.runEffFn1 kc unit)
+--       pure $ AC.EffFnCanceler $ AC.mkEffFn3 \e cke ckc → do
+--         clearTimeout tid
+--         AC.runEffFn1 ckc unit
+--     action = do
+--       jsDelay 10
+--       modifyRef ref (_ <> "done")
+--   f1 ← forkAff action
+--   f2 ← forkAff action
+--   killFiber (error "Nope.") f2
+--   delay (Milliseconds 20.0)
+--   eq "done" <$> readRef ref
 
 test_parallel_stack ∷ ∀ eff. TestAff eff Unit
 test_parallel_stack = assert "parallel/stack" do
@@ -596,42 +611,42 @@ test_scheduler_size = assert "scheduler" do
 main ∷ TestEff () Unit
 main = do
   test_pure
-  test_bind
-  test_try
-  test_throw
-  test_liftEff
+  -- test_bind
+  -- test_try
+  -- test_throw
+  -- test_liftEff
 
-  void $ launchAff do
-    test_delay
-    test_fork
-    test_join
-    test_join_throw
-    test_join_throw_sync
-    test_multi_join
-    test_suspend
-    test_makeAff
-    test_bracket
-    test_bracket_nested
-    test_general_bracket
-    test_supervise
-    test_kill
-    test_kill_canceler
-    test_kill_bracket
-    test_kill_bracket_nested
-    test_kill_supervise
-    test_kill_finalizer_catch
-    test_kill_finalizer_bracket
-    test_parallel
-    test_kill_parallel
-    test_parallel_alt
-    test_parallel_alt_throw
-    test_parallel_alt_sync
-    test_parallel_mixed
-    test_kill_parallel_alt
-    test_avar_order
-    test_efffn
-    test_fiber_map
-    test_fiber_apply
-    -- Turn on if we decide to schedule forks
-    -- test_scheduler_size
-    test_parallel_stack
+  -- void $ launchAff do
+  --   test_delay
+  --   test_fork
+  --   test_join
+  --   test_join_throw
+  --   test_join_throw_sync
+  --   test_multi_join
+  --   test_suspend
+  --   test_makeAff
+  --   test_bracket
+  --   test_bracket_nested
+  --   test_general_bracket
+  --   test_supervise
+  --   test_kill
+  --   test_kill_canceler
+  --   test_kill_bracket
+  --   test_kill_bracket_nested
+  --   test_kill_supervise
+  --   test_kill_finalizer_catch
+  --   test_kill_finalizer_bracket
+  --   test_parallel
+  --   test_kill_parallel
+  --   test_parallel_alt
+  --   test_parallel_alt_throw
+  --   test_parallel_alt_sync
+  --   test_parallel_mixed
+  --   test_kill_parallel_alt
+  --   test_avar_order
+  --   -- test_efffn
+  --   test_fiber_map
+  --   test_fiber_apply
+  --   -- Turn on if we decide to schedule forks
+  --   -- test_scheduler_size
+  --   test_parallel_stack
